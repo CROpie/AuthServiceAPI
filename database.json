@@ -8,5 +8,10 @@
         "username": "peanut",
         "password": "secret",
         "hashedPassword": "$2y$10$19anRQcaFNkHt6XYjvu5deK7iJZvW8J1.o/45P./EbhCD2fG2.mOO"
+    },
+    {
+        "username": "admin",
+        "password": "admin",
+        "hashedPassword": "$2y$10$6Zmbs4FAz3hHdJWhDurm8.UNWzYIiaTyrB1p\/AVC7dhTed\/L5uIzG"
     }
 ]

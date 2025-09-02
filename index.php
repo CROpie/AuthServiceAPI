@@ -1,4 +1,19 @@
 <?php
+// Allow CORS for all requests
+header("Access-Control-Allow-Origin: *");
+header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+header("Access-Control-Allow-Headers: Content-Type, Authorization");
+
+// Handle preflight request
+if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+    header("Access-Control-Allow-Origin: *");
+    header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
+    header("Access-Control-Allow-Headers: Content-Type, Authorization");
+    exit(0);
+}
+
+// Normal GET/POST handling
+header("Access-Control-Allow-Origin: *");
 
 require_once("./utils.php");
 
@@ -13,6 +28,11 @@ try {
         case($method == 'POST' && $uri == '/api/token'):
 
             $response = handleObtainToken($response);
+
+            break;
+        case($method == 'GET' && $uri == '/api/authenticate'):
+
+            $response = handleAuthentication($response);
 
             break;
         default:
@@ -87,11 +107,62 @@ function handleObtainToken($response) {
 
     $hashedPassword = getStoredPassword($username);
 
+    /* manual hash password */
+    // $response['hash'] = password_hash($password, PASSWORD_DEFAULT);
+    // return $response;
+
     if (!password_verify($password, $hashedPassword)) throw new Exception("incorrect password", 401);
 
     $jwt = generateJWT($username);
 
     $response['data'] = $jwt;
 
+    return $response;
+}
+
+function getJWTFromHeader() {
+    $headers = getallheaders();
+
+    if (!isset($headers['Authorization'])) throw new Error("Authorization header missing", 401);
+
+    $authHeader = $headers['Authorization'];
+
+    if (!preg_match('/Bearer\s(\S+)/', $authHeader, $matches)) throw new Error("Invalid Authorization header format", 400);
+
+    return $matches[1];
+}
+
+function validateAndExtractPayloadFromJWT($jwt) {
+    // "header.payload.signature";
+
+    $parts = explode('.', $jwt);
+
+    if (count($parts) != 3) throw new Error("Incorrect formatting of JWT", 400);
+
+    $secret = "not_safe_for_production";
+
+    $signature = hash_hmac('sha256', "$parts[0].$parts[1]", $secret, true);
+    $signatureEncoded = base64UrlEncode($signature);
+
+    if ($signatureEncoded != $parts[2]) throw new Error("Token has been tampered with", 400);
+
+    // note: json_decode will return PHP object instead of associate array unless 2nd arg is "true"
+    $decodedPayload = json_decode(base64UrlDecode($parts[1]), true);
+
+    return $decodedPayload;
+}
+
+function isTokenExpired($payload) {
+    return $payload['expiry'] < time();
+}
+
+function handleAuthentication($response) {
+    $jwt = getJWTFromHeader();
+
+    $payload = validateAndExtractPayloadFromJWT($jwt);
+
+    if (isTokenExpired($payload)) throw new Error("Token has expired", 400);
+
+    $response['data'] = $payload;
     return $response;
 }
