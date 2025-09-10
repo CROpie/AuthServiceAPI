@@ -1,0 +1,54 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+      - feat/*
+
+jobs:
+  deploy-auth-service:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Prepare files for deployment
+        run: |
+          mkdir -p deploy
+          cp .htaccess deploy
+          cp index.php deploy
+          cp utils.php deploy
+          cp run.sh deploy
+
+      - name: Copy to droplet
+        uses: appleboy/scp-action@v0.1.5
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          source: "deploy/*"
+          target: "/var/www/AuthServiceAPI/tmp"
+          overwrite: true
+          strip_components: 1
+
+  restart-resources:
+    runs-on: ubuntu-22.04
+    needs: deploy-auth-service
+    steps:
+      - name: Restart tmux
+        uses: appleboy/ssh-action@v0.1.5
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: ${{ secrets.DROPLET_USER }}
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script: |
+            if tmux has-session -t prod 2>/dev/null; then
+              tmux kill-session -t prod
+            fi
+            cd /var/www/AuthServiceAPI
+            mv ./tmp/* .
+            rm -rf ./tmp
+            cd ..
+            ./start.sh

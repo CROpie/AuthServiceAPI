@@ -17,6 +17,14 @@ header("Access-Control-Allow-Origin: *");
 
 require_once("./utils.php");
 
+// have to pass into functions due to PHP function scope
+$fp = stream_socket_client("tcp://localhost:12345", $errno, $errstr, 5);
+
+if (!$fp) {
+    error_log("Failed to connect to db\n", 3, "./error.log");
+    die("Connection failed: $errstr ($errno)");
+}
+
 $uri = $_SERVER['REQUEST_URI'];
 $method = $_SERVER['REQUEST_METHOD'];
 
@@ -27,12 +35,12 @@ try {
     switch ($method | $uri) {
         case($method == 'POST' && $uri == '/api/token'):
 
-            $response = handleObtainToken($response);
+            $response = handleObtainToken($response, $fp);
 
             break;
         case($method == 'GET' && $uri == '/api/authenticate'):
 
-            $response = handleAuthentication($response);
+            $response = handleAuthentication($response, $fp);
 
             break;
         default:
@@ -72,10 +80,15 @@ function generateJWT($username) {
     return "$headerEncoded.$payloadEncoded.$signatureEncoded";
 }
 
-function getStoredPassword($username) {
+function getStoredPassword($username, $fp) {
+
+    fwrite($fp, "SELECT * FROM auth;\n");
+    $res = fread($fp, 1024);
+    $users = json_decode($res, true);
+
     // swap with query database
-    $data = file_get_contents('database.json');
-    $users = json_decode($data, true);
+    // $data = file_get_contents('database.json');
+    // $users = json_decode($data, true);
 
     $found = false;
     $hashedPassword;
@@ -98,14 +111,14 @@ function getStoredPassword($username) {
 
 }
 
-function handleObtainToken($response) {
+function handleObtainToken($response, $fp) {
     $username = sanitize_input($_POST["username"]);
     $password = sanitize_input($_POST["password"]);
 
     if (empty($username)) throw new Exception("username field was left empty", 400);
     if (empty($password)) throw new Exception("password field was left empty", 400);
 
-    $hashedPassword = getStoredPassword($username);
+    $hashedPassword = getStoredPassword($username, $fp);
 
     /* manual hash password */
     // $response['hash'] = password_hash($password, PASSWORD_DEFAULT);
