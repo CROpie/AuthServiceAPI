@@ -1,21 +1,34 @@
 <?php
-// Allow CORS for all requests
-header("Access-Control-Allow-Origin: *");
-header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-header("Access-Control-Allow-Headers: Content-Type, Authorization");
+
+// either this or env variable to determine whether testing locally or deployed
+$isProd = ($_SERVER['HTTP_HOST'] === 'auth.cropie.online');
+
+$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
 
 // Handle preflight request
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    header("Access-Control-Allow-Origin: *");
+    header("Access-Control-Allow-Origin: $origin");
+    header("Access-Control-Allow-Credentials: true");
+    header("Access-Control-Allow-Headers: Content-Type");
     header("Access-Control-Allow-Methods: GET, POST, OPTIONS");
-    header("Access-Control-Allow-Headers: Content-Type, Authorization");
     exit(0);
 }
 
-// Normal GET/POST handling
-header("Access-Control-Allow-Origin: *");
+$allowedOrigins = $isProd
+    ? ['https://lobby.cropie.online', 'https://hangman.cropie.online']
+    : ['http://localhost:1234', 'http://localhost:4000'];
+
+if (in_array($origin, $allowedOrigins)) {
+    header("Access-Control-Allow-Origin: $origin");
+    header("Access-Control-Allow-Credentials: true");
+}
 
 require_once("./utils.php");
+
+$uri = $_SERVER['REQUEST_URI'];
+$method = $_SERVER['REQUEST_METHOD'];
+
+$response = [];
 
 // have to pass into functions due to PHP function scope
 $fp = stream_socket_client("tcp://localhost:12345", $errno, $errstr, 5);
@@ -41,6 +54,11 @@ try {
         case($method == 'GET' && $uri == '/api/authenticate'):
 
             $response = handleAuthentication($response, $fp);
+
+            break;
+        case($method == 'GET' && $uri == '/api/logout'):
+
+            $response = handleLogOut($response, $fp);
 
             break;
         default:
@@ -82,13 +100,10 @@ function generateJWT($username) {
 
 function getStoredPassword($username, $fp) {
 
+    // update using WHERE
     fwrite($fp, "SELECT * FROM auth;\n");
     $res = fread($fp, 1024);
     $users = json_decode($res, true);
-
-    // swap with query database
-    // $data = file_get_contents('database.json');
-    // $users = json_decode($data, true);
 
     $found = false;
     $hashedPassword;
@@ -106,9 +121,6 @@ function getStoredPassword($username, $fp) {
     return $hashedPassword;
 
     // $hash = password_hash($password, PASSWORD_DEFAULT);
-    // password: $2y$10$Gt.cydTq3ArEsbPLxQ.mHOGuCgfC.0wh8PHueVA7DanEjsOABTtAO
-    // secret: $2y$10$19anRQcaFNkHt6XYjvu5deK7iJZvW8J1.o/45P./EbhCD2fG2.mOO
-
 }
 
 function handleObtainToken($response, $fp) {
@@ -120,13 +132,24 @@ function handleObtainToken($response, $fp) {
 
     $hashedPassword = getStoredPassword($username, $fp);
 
-    /* manual hash password */
-    // $response['hash'] = password_hash($password, PASSWORD_DEFAULT);
-    // return $response;
-
     if (!password_verify($password, $hashedPassword)) throw new Exception("incorrect password", 401);
 
     $jwt = generateJWT($username);
+
+    $isProd = ($_SERVER['HTTP_HOST'] === 'auth.cropie.online');
+
+    setcookie(
+        "token",
+        $jwt,
+        [
+            'expires' => time() + 60 * 60 * 24,
+            'path' => '/',
+            'domain' => $isProd ? '.cropie.online' : '', // share across subdomains (blank for localhost)
+            'secure' => $isProd, // HTTPS only (prod only)
+            'httponly' => true, // JS cannot read
+            'samesite' => $isProd ? 'None' : 'Lax' // required for cross-site
+        ]
+    );
 
     $response['data'] = $jwt;
 
@@ -136,11 +159,11 @@ function handleObtainToken($response, $fp) {
 function getJWTFromHeader() {
     $headers = getallheaders();
 
-    if (!isset($headers['Authorization'])) throw new Error("Authorization header missing", 401);
+    if (!isset($headers['Authorization'])) throw new Exception("Authorization header missing", 401);
 
     $authHeader = $headers['Authorization'];
 
-    if (!preg_match('/Bearer\s(\S+)/', $authHeader, $matches)) throw new Error("Invalid Authorization header format", 400);
+    if (!preg_match('/Bearer\s(\S+)/', $authHeader, $matches)) throw new Exception("Invalid Authorization header format", 400);
 
     return $matches[1];
 }
@@ -150,14 +173,14 @@ function validateAndExtractPayloadFromJWT($jwt) {
 
     $parts = explode('.', $jwt);
 
-    if (count($parts) != 3) throw new Error("Incorrect formatting of JWT", 400);
+    if (count($parts) != 3) throw new Exception("Incorrect formatting of JWT", 400);
 
     $secret = "not_safe_for_production";
 
     $signature = hash_hmac('sha256', "$parts[0].$parts[1]", $secret, true);
     $signatureEncoded = base64UrlEncode($signature);
 
-    if ($signatureEncoded != $parts[2]) throw new Error("Token has been tampered with", 400);
+    if ($signatureEncoded != $parts[2]) throw new Exception("Token has been tampered with", 400);
 
     // note: json_decode will return PHP object instead of associate array unless 2nd arg is "true"
     $decodedPayload = json_decode(base64UrlDecode($parts[1]), true);
@@ -169,13 +192,54 @@ function isTokenExpired($payload) {
     return $payload['expiry'] < time();
 }
 
-function handleAuthentication($response) {
+// Function to verify a token that is sent via Authorization -> Bearer (currently disabled)
+function handleClientAuthentication($response) {
     $jwt = getJWTFromHeader();
 
     $payload = validateAndExtractPayloadFromJWT($jwt);
 
-    if (isTokenExpired($payload)) throw new Error("Token has expired", 400);
+    if (isTokenExpired($payload)) throw new Exception("Token has expired", 400);
 
     $response['data'] = $payload;
     return $response;
+}
+
+function getJWTFromCookieHeader() {
+    if (!isset($_COOKIE['token'])) throw new Exception("Unauthorized", 401);
+
+    return $_COOKIE['token'];
+}
+
+function handleAuthentication($response) {
+
+    // $jwt = getJWTFromCookieHeader();
+    $jwt = $_COOKIE['token'];
+
+    if (!$jwt) throw new Exception("No token", 400);
+
+    $payload = validateAndExtractPayloadFromJWT($jwt);
+
+    if (isTokenExpired($payload)) throw new Exception("Token has expired", 400);
+
+    $response['data'] = $payload;
+
+    return $response;
+}
+
+function handleLogOut($reponse) {
+
+    $isProd = ($_SERVER['HTTP_HOST'] === 'auth.cropie.online');
+    
+    setcookie(
+        "token",
+        '',
+        [
+            'expires' => time() - 3600,
+            'path' => '/',
+            'domain' => $isProd ? '.cropie.online' : '',
+            'secure' => $isProd,
+            'httponly' => true,
+            'samesite' => $isProd ? 'None' : 'Lax'
+        ]
+    );
 }
